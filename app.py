@@ -1492,7 +1492,7 @@ def health_check():
 
 @app.route('/env_check', methods=['GET'])
 def env_check():
-    """Debug endpoint to check environment variables"""
+    """Debug endpoint to check environment variables and Firebase config"""
     # Create a safe subset of env vars to display
     safe_env = {
         "FIREBASE_STORAGE_BUCKET": os.environ.get('FIREBASE_STORAGE_BUCKET', 'Not set'),
@@ -1505,10 +1505,62 @@ def env_check():
         "DIRECTORY_CONTENTS": os.listdir('.')
     }
     
+    # Get Firebase app info
+    firebase_info = {}
+    try:
+        if firebase_admin._apps:
+            app = firebase_admin._apps[firebase_admin._DEFAULT_APP_NAME]
+            firebase_info = {
+                "project_id": app.project_id,
+                "app_options": {
+                    k: v for k, v in app._options.items() 
+                    if k not in ['credential'] # Don't include credentials
+                },
+                "default_bucket": storage.bucket().name if hasattr(storage, 'bucket') else None
+            }
+            
+            # Test actual storage access
+            try:
+                test_bucket = storage.bucket()
+                sample_blobs = list(test_bucket.list_blobs(max_results=5))
+                firebase_info["storage_test"] = {
+                    "success": True,
+                    "bucket_name": test_bucket.name,
+                    "sample_blob_count": len(sample_blobs),
+                    "sample_blobs": [b.name for b in sample_blobs]
+                }
+            except Exception as e:
+                firebase_info["storage_test"] = {
+                    "success": False,
+                    "error": str(e)
+                }
+        else:
+            firebase_info = {"status": "Firebase not initialized"}
+    except Exception as e:
+        firebase_info = {"error": str(e)}
+    
+    # Check service account file
+    service_account_info = {}
+    sa_path = os.path.abspath('jamesmemorysync-firebase-adminsdk-fbsvc-d142d44489.json')
+    if os.path.exists(sa_path):
+        try:
+            with open(sa_path, 'r') as f:
+                data = json.load(f)
+                service_account_info = {
+                    "type": data.get("type"),
+                    "project_id": data.get("project_id"),
+                    "client_email": data.get("client_email"),
+                    "auth_uri": data.get("auth_uri")
+                }
+        except Exception as e:
+            service_account_info = {"error": str(e)}
+    
     return jsonify({
         "status": "success",
         "data": {
             "environment": safe_env,
+            "firebase": firebase_info,
+            "service_account": service_account_info,
             "timestamp": datetime.now().isoformat()
         }
     }), 200
