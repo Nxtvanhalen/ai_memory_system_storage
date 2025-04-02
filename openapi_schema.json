@@ -1003,6 +1003,102 @@
         }
       }
     },
+    "/list_files_by_category": {
+      "get": {
+        "summary": "List all files grouped by category",
+        "description": "Retrieve a list of all files organized by category with user-friendly names.",
+        "operationId": "listFilesByCategory",
+        "parameters": [
+          {
+            "name": "include_metadata",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "description": "Whether to include full metadata for each file"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Categorized file list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": ["success"]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "categories": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string"
+                                },
+                                "display_name": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                },
+                                "size": {
+                                  "type": "integer"
+                                },
+                                "content_type": {
+                                  "type": "string"
+                                },
+                                "updated": {
+                                  "type": "string"
+                                },
+                                "download_url": {
+                                  "type": "string"
+                                },
+                                "metadata": {
+                                  "type": "object"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": ["error"]
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/file_categories": {
       "get": {
         "summary": "Get a list of all file categories",

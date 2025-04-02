@@ -749,21 +749,42 @@ def retrieve_file(file_id):
         args = getattr(request, 'unwrapped_args', request.args)
         category = args.get('category', 'default')
         download = args.get('download', 'false').lower() == 'true'
+        exact_path = args.get('path', '')  # Optional exact path for direct retrieval
         
         logger.info(f"Retrieving file: {file_id} from category: {category}")
         
-        # Look for file with any extension in the specified category
+        # Find the file in Firebase Storage
         bucket = get_bucket()
-        blobs = list(bucket.list_blobs(prefix=f"{category}/{file_id}"))
         
-        # Filter out text content files and any other metadata files
-        file_blobs = [blob for blob in blobs if not blob.name.endswith('_text.txt')]
+        # If an exact path is provided, use it directly
+        if exact_path:
+            logger.info(f"Using exact path: {exact_path}")
+            blob = bucket.blob(exact_path)
+            if not blob.exists():
+                return jsonify({"status": "error", "error": "File not found at specified path"}), 404
+            
+            file_blobs = [blob]
+        else:
+            # Otherwise, do a prefix search with the file_id
+            # First try exact category/file_id pattern
+            blobs = list(bucket.list_blobs(prefix=f"{category}/{file_id}"))
+            
+            # If nothing found, try a global search across all categories
+            if not blobs:
+                logger.info(f"No files found in category '{category}', searching all categories")
+                blobs = list(bucket.list_blobs())
+                # Filter by file_id anywhere in the name (for manually uploaded files)
+                blobs = [b for b in blobs if file_id.lower() in b.name.lower()]
+            
+            # Filter out text content files
+            file_blobs = [blob for blob in blobs if not blob.name.endswith('_text.txt')]
         
         if not file_blobs:
             return jsonify({"status": "error", "error": "File not found"}), 404
             
         # Use the first matching file
         blob = file_blobs[0]
+        logger.info(f"Found file: {blob.name}")
         
         # Generate download URL if requested
         if not download:
@@ -862,28 +883,39 @@ def search_files():
         # Track match quality for ranking
         matches = []
         
-        # Search through file metadata
+        # Search through file metadata and names
         for blob in file_blobs:
-            # Extract file_id from the blob name
-            file_id = os.path.splitext(os.path.basename(blob.name))[0]
+            # Extract base name and full path for searching
+            file_path = blob.name
+            file_name = os.path.basename(file_path)
+            file_id = os.path.splitext(file_name)[0]
             
-            # Skip if no metadata
-            if not blob.metadata:
-                continue
-                
-            metadata = blob.metadata
             match_score = 0
             match_reason = []
             
-            # Match by filename
+            # Always match by the actual file name in Storage (catches manually uploaded files)
+            if query.lower() in file_name.lower():
+                match_score += 20
+                match_reason.append("file_name")
+            
+            # Check the containing folder/path
+            folder_path = os.path.dirname(file_path)
+            if query.lower() in folder_path.lower():
+                match_score += 15
+                match_reason.append("folder")
+                
+            # Handle files with or without metadata (manually uploaded files might not have metadata)
+            metadata = blob.metadata or {}
+            
+            # Match by metadata filename if available
             original_filename = metadata.get('original_filename', '')
-            if query.lower() in original_filename.lower():
+            if original_filename and query.lower() in original_filename.lower():
                 match_score += 10
-                match_reason.append("filename")
+                match_reason.append("metadata_filename")
                 
             # Match by description
             description = metadata.get('description', '')
-            if query.lower() in description.lower():
+            if description and query.lower() in description.lower():
                 match_score += 8
                 match_reason.append("description")
                 
@@ -1276,6 +1308,95 @@ def get_file_categories():
         
     except Exception as e:
         logger.error(f"Error in get_file_categories: {str(e)}")
+        return jsonify({"status": "error", "error": "Internal server error"}), 500
+
+@app.route('/list_files_by_category', methods=['GET'])
+@api_error_handler
+def list_files_by_category():
+    """List files grouped by category, with user-friendly filenames"""
+    try:
+        # Get query parameters
+        args = getattr(request, 'unwrapped_args', request.args)
+        include_metadata = args.get('include_metadata', 'false').lower() == 'true'
+        
+        logger.info(f"Listing files by category")
+        
+        # Get bucket reference
+        bucket = get_bucket()
+        
+        # List all blobs
+        all_blobs = list(bucket.list_blobs())
+        
+        # Filter out text content files
+        file_blobs = [blob for blob in all_blobs if not blob.name.endswith('_text.txt')]
+        
+        # Group by category
+        files_by_category = {}
+        
+        for blob in file_blobs:
+            # Get path parts
+            parts = blob.name.split('/')
+            
+            # Determine category and filename
+            if len(parts) > 1:
+                category = parts[0]
+                filename = parts[-1]  # Last part is the filename
+            else:
+                category = "Uncategorized"
+                filename = blob.name
+                
+            # Get display name (prefer metadata original_filename if available)
+            display_name = filename
+            if blob.metadata and 'original_filename' in blob.metadata:
+                display_name = blob.metadata['original_filename']
+                
+            # Initialize category if not exists
+            if category not in files_by_category:
+                files_by_category[category] = []
+                
+            # Create file info object
+            file_info = {
+                "name": filename,
+                "display_name": display_name,
+                "path": blob.name,
+                "size": blob.size,
+                "content_type": blob.content_type or "application/octet-stream",
+                "updated": blob.updated.isoformat() if blob.updated else None
+            }
+            
+            # Add metadata if requested
+            if include_metadata and blob.metadata:
+                file_info["metadata"] = blob.metadata
+                
+            # Try to generate a download URL
+            try:
+                file_info["download_url"] = blob.generate_signed_url(
+                    version="v4",
+                    expiration=timedelta(hours=24),
+                    method="GET"
+                )
+            except Exception:
+                pass
+                
+            # Add to category list
+            files_by_category[category].append(file_info)
+            
+        # Sort files within each category by updated date (newest first)
+        for category in files_by_category:
+            files_by_category[category].sort(
+                key=lambda x: x.get("updated", ""),
+                reverse=True
+            )
+            
+        return jsonify({
+            "status": "success",
+            "data": {
+                "categories": files_by_category
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error listing files by category: {str(e)}")
         return jsonify({"status": "error", "error": "Internal server error"}), 500
 
 @app.route('/file_info/<file_id>', methods=['GET'])
