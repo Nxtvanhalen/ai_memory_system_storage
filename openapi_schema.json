@@ -1217,6 +1217,87 @@
         }
       }
     },
+    "/list_all_files": {
+      "get": {
+        "summary": "List all files in Firebase Storage",
+        "description": "Get a complete listing of all files stored in Firebase Storage for debugging purposes.",
+        "operationId": "listAllFiles",
+        "responses": {
+          "200": {
+            "description": "Complete file listing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": ["success"]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "bucket": {
+                          "type": "string"
+                        },
+                        "file_count": {
+                          "type": "integer"
+                        },
+                        "files": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string"
+                              },
+                              "size": {
+                                "type": "integer"
+                              },
+                              "updated": {
+                                "type": "string"
+                              },
+                              "content_type": {
+                                "type": "string"
+                              },
+                              "metadata": {
+                                "type": "object"
+                              },
+                              "original_filename": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": ["error"]
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/system_stats": {
       "get": {
         "summary": "Get system statistics",

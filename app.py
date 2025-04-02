@@ -95,7 +95,16 @@ def get_bucket():
     """Get the Firebase Storage bucket with caching"""
     if 'default' not in bucket_cache:
         bucket_name = os.environ.get('FIREBASE_STORAGE_BUCKET', 'jamesmemorysync.appspot.com')
-        bucket_cache['default'] = storage.bucket(bucket_name)
+        logger.info(f"Initializing Firebase Storage bucket: {bucket_name}")
+        try:
+            bucket = storage.bucket(bucket_name)
+            # Test bucket access by listing blobs (will raise exception if issues)
+            list(bucket.list_blobs(max_results=1))
+            bucket_cache['default'] = bucket
+            logger.info(f"Successfully initialized and tested bucket access: {bucket_name}")
+        except Exception as e:
+            logger.error(f"Error initializing Firebase Storage bucket: {str(e)}")
+            raise
     return bucket_cache['default']
 
 def initialize_firebase():
@@ -579,13 +588,19 @@ Note: This is a reference entry. The original file could not be downloaded.
 """
                     
                     # Set metadata and upload reference content
+                    logger.info(f"Uploading reference file to: {storage_path}")
+                    logger.info(f"Using Firebase Storage bucket: {bucket.name}")
                     blob.metadata = file_metadata
                     blob.upload_from_string(reference_content)
+                    logger.info(f"Upload complete. File accessible at: gs://{bucket.name}/{storage_path}")
                     
                     # For searchability, create a text content file
-                    text_blob = bucket.blob(f"{category}/{file_id}_text.txt")
+                    text_path = f"{category}/{file_id}_text.txt"
+                    logger.info(f"Uploading searchable text content to: {text_path}")
+                    text_blob = bucket.blob(text_path)
                     text_content = f"{original_filename}\n{description}\n{', '.join(tags) if isinstance(tags, list) else tags}"
                     text_blob.upload_from_string(text_content)
+                    logger.info(f"Text content upload complete")
                     
                     message = "OpenAI file reference stored successfully" if is_openai_file else "File reference stored successfully (download failed)"
                     
@@ -1475,6 +1490,55 @@ def health_check():
         }
     }), 200
 
+@app.route('/list_all_files', methods=['GET'])
+@api_error_handler
+def list_all_files():
+    """List all files in Firebase Storage, primarily for debugging"""
+    try:
+        logger.info("Listing all files in Firebase Storage")
+        
+        # Get bucket reference
+        bucket = get_bucket()
+        logger.info(f"Using Firebase Storage bucket: {bucket.name}")
+        
+        # List all blobs
+        all_blobs = list(bucket.list_blobs())
+        logger.info(f"Found {len(all_blobs)} total files in storage")
+        
+        # Create detailed file list
+        file_list = []
+        for blob in all_blobs:
+            # Skip text content files for cleaner output
+            if not blob.name.endswith('_text.txt'):
+                file_info = {
+                    "name": blob.name,
+                    "size": blob.size,
+                    "updated": blob.updated.isoformat() if blob.updated else None,
+                    "content_type": blob.content_type,
+                    "metadata": blob.metadata
+                }
+                
+                if blob.metadata and "original_filename" in blob.metadata:
+                    file_info["original_filename"] = blob.metadata["original_filename"]
+                    
+                file_list.append(file_info)
+        
+        return jsonify({
+            "status": "success",
+            "data": {
+                "bucket": bucket.name,
+                "file_count": len(file_list),
+                "files": file_list
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error listing all files: {e}")
+        return jsonify({
+            "status": "error",
+            "error": f"Could not list files: {str(e)}"
+        }), 500
+
 @app.route('/system_stats', methods=['GET'])
 @api_error_handler
 def get_system_stats():
@@ -1484,7 +1548,15 @@ def get_system_stats():
         
         # Get bucket reference and count files
         bucket = get_bucket()
-        all_blobs = list(bucket.list_blobs())
+        logger.info(f"Using Firebase Storage bucket: {bucket.name}")
+        
+        # List all blobs with more error handling
+        try:
+            all_blobs = list(bucket.list_blobs())
+            logger.info(f"Found {len(all_blobs)} total files in storage")
+        except Exception as blob_e:
+            logger.error(f"Error listing blobs: {blob_e}")
+            all_blobs = []
         
         # Count categories, files, and total storage
         categories = set()
@@ -1509,7 +1581,9 @@ def get_system_stats():
                 "bucket_cache_size": len(bucket_cache),
                 "results_cache_size": len(results_cache),
                 "metadata_cache_size": len(metadata_cache)
-            }
+            },
+            "bucket_name": bucket.name,
+            "category_list": list(categories)
         }
         
         return jsonify({
@@ -1521,7 +1595,7 @@ def get_system_stats():
         logger.error(f"Error getting system stats: {e}")
         return jsonify({
             "status": "error",
-            "error": "Could not retrieve system statistics"
+            "error": f"Could not retrieve system statistics: {str(e)}"
         }), 500
 
 if __name__ == '__main__':
