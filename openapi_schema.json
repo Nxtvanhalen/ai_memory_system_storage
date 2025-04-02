@@ -588,6 +588,14 @@
                               "name": {
                                 "type": "string"
                               },
+                              "display_name": {
+                                "type": "string",
+                                "description": "User-friendly name for the file"
+                              },
+                              "file_type": {
+                                "type": "string",
+                                "description": "Human readable file type (PDF Document, Word Document, etc.)"
+                              },
                               "category": {
                                 "type": "string"
                               },

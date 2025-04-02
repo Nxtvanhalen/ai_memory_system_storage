@@ -888,10 +888,16 @@ def search_files():
             # Extract base name and full path for searching
             file_path = blob.name
             file_name = os.path.basename(file_path)
+            file_ext = os.path.splitext(file_name)[1].lower()
             file_id = os.path.splitext(file_name)[0]
             
             match_score = 0
             match_reason = []
+            
+            # Match by the file extension/type
+            if query.lower() in file_ext.lower().lstrip('.'):
+                match_score += 25  # High priority for file type matches (pdf, doc, etc)
+                match_reason.append("file_type")
             
             # Always match by the actual file name in Storage (catches manually uploaded files)
             if query.lower() in file_name.lower():
@@ -904,6 +910,31 @@ def search_files():
                 match_score += 15
                 match_reason.append("folder")
                 
+            # Check the content type (MIME type)
+            content_type = blob.content_type or ""
+            if content_type and query.lower() in content_type.lower():
+                match_score += 18
+                match_reason.append("content_type")
+                
+            # Special case for common file types regardless of content_type
+            common_types = {
+                "pdf": [".pdf", "application/pdf"],
+                "word": [".doc", ".docx", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+                "excel": [".xls", ".xlsx", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+                "image": [".jpg", ".jpeg", ".png", ".gif", ".bmp", "image/"],
+                "text": [".txt", ".md", ".csv", "text/"],
+                "presentation": [".ppt", ".pptx", "application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation"]
+            }
+            
+            for type_name, type_indicators in common_types.items():
+                if query.lower() in type_name.lower():
+                    for indicator in type_indicators:
+                        if (indicator.startswith(".") and file_ext.lower() == indicator) or \
+                           (not indicator.startswith(".") and content_type and indicator in content_type.lower()):
+                            match_score += 30  # Very high priority for matching common file types
+                            match_reason.append(f"common_type_{type_name}")
+                            break
+            
             # Handle files with or without metadata (manually uploaded files might not have metadata)
             metadata = blob.metadata or {}
             
@@ -977,10 +1008,35 @@ def search_files():
                 except Exception:
                     download_url = None
                     
+                # Get a user-friendly display name
+                display_name = os.path.basename(blob.name)
+                if metadata and 'original_filename' in metadata:
+                    display_name = metadata['original_filename']
+                    
+                # Determine file type from extension for better display
+                file_ext = os.path.splitext(blob.name)[1].lower()
+                friendly_type = file_ext.lstrip('.').upper() if file_ext else "Unknown"
+                
+                # For common types, make them more readable
+                if file_ext == '.pdf':
+                    friendly_type = "PDF Document"
+                elif file_ext in ['.doc', '.docx']:
+                    friendly_type = "Word Document"
+                elif file_ext in ['.xls', '.xlsx']:
+                    friendly_type = "Excel Spreadsheet"
+                elif file_ext in ['.ppt', '.pptx']:
+                    friendly_type = "PowerPoint Presentation"
+                elif file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']:
+                    friendly_type = "Image"
+                elif file_ext in ['.txt', '.md', '.csv']:
+                    friendly_type = "Text File"
+                
                 matches.append({
                     "file_id": file_id,
                     "name": blob.name,
+                    "display_name": display_name,
                     "category": category or blob.name.split('/')[0],
+                    "file_type": friendly_type,
                     "score": match_score,
                     "match_reason": match_reason,
                     "metadata": metadata,
@@ -1007,10 +1063,35 @@ def search_files():
                 except Exception:
                     download_url = None
                     
+                # Get a user-friendly display name
+                display_name = os.path.basename(blob.name)
+                if metadata and 'original_filename' in metadata:
+                    display_name = metadata['original_filename']
+                    
+                # Determine file type from extension for better display
+                file_ext = os.path.splitext(blob.name)[1].lower()
+                friendly_type = file_ext.lstrip('.').upper() if file_ext else "Unknown"
+                
+                # For common types, make them more readable
+                if file_ext == '.pdf':
+                    friendly_type = "PDF Document"
+                elif file_ext in ['.doc', '.docx']:
+                    friendly_type = "Word Document"
+                elif file_ext in ['.xls', '.xlsx']:
+                    friendly_type = "Excel Spreadsheet"
+                elif file_ext in ['.ppt', '.pptx']:
+                    friendly_type = "PowerPoint Presentation"
+                elif file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']:
+                    friendly_type = "Image"
+                elif file_ext in ['.txt', '.md', '.csv']:
+                    friendly_type = "Text File"
+                
                 matches.append({
                     "file_id": file_id,
                     "name": blob.name,
+                    "display_name": display_name,
                     "category": category or blob.name.split('/')[0],
+                    "file_type": friendly_type,
                     "score": 1,  # Low score for sorting
                     "match_reason": ["recent"],
                     "metadata": metadata,
