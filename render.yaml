@@ -6,7 +6,7 @@ services:
     healthCheckPath: /health_check
     envVars:
       - key: FIREBASE_STORAGE_BUCKET
-        value: jamesmemorysync.appspot.com
+        value: jamesmemorysync.firebasestorage.app
       - key: PROJECT_ID
         value: jamesmemorysync
     includeFiles:

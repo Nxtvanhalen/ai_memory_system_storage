@@ -94,7 +94,8 @@ def api_error_handler(f):
 def get_bucket():
     """Get the Firebase Storage bucket with caching"""
     if 'default' not in bucket_cache:
-        bucket_name = os.environ.get('FIREBASE_STORAGE_BUCKET', 'jamesmemorysync.appspot.com')
+        # Use the correct bucket name - the one you're looking at in the console
+        bucket_name = os.environ.get('FIREBASE_STORAGE_BUCKET', 'jamesmemorysync.firebasestorage.app')
         logger.info(f"Initializing Firebase Storage bucket: {bucket_name}")
         try:
             bucket = storage.bucket(bucket_name)
@@ -1695,8 +1696,8 @@ def direct_storage_test():
             # Create fresh credential
             cred = admin_cred.Certificate(sa_path)
             
-            # Get bucket name from environment
-            bucket_name = os.environ.get('FIREBASE_STORAGE_BUCKET', 'jamesmemorysync.appspot.com')
+            # Get bucket name from environment, defaulting to the correct one
+            bucket_name = os.environ.get('FIREBASE_STORAGE_BUCKET', 'jamesmemorysync.firebasestorage.app')
             
             # Initialize with just storage bucket
             test_app = firebase_admin.initialize_app(cred, {
