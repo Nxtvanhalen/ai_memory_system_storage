@@ -1510,12 +1510,9 @@ def env_check():
     try:
         if firebase_admin._apps:
             app = firebase_admin._apps[firebase_admin._DEFAULT_APP_NAME]
+            # Get app info without trying to access _options directly
             firebase_info = {
                 "project_id": app.project_id,
-                "app_options": {
-                    k: v for k, v in app._options.items() 
-                    if k not in ['credential'] # Don't include credentials
-                },
                 "default_bucket": storage.bucket().name if hasattr(storage, 'bucket') else None
             }
             
@@ -1576,42 +1573,212 @@ def list_all_files():
         bucket = get_bucket()
         logger.info(f"Using Firebase Storage bucket: {bucket.name}")
         
-        # List all blobs
-        all_blobs = list(bucket.list_blobs())
-        logger.info(f"Found {len(all_blobs)} total files in storage")
-        
-        # Create detailed file list
-        file_list = []
-        for blob in all_blobs:
-            # Skip text content files for cleaner output
-            if not blob.name.endswith('_text.txt'):
-                file_info = {
-                    "name": blob.name,
-                    "size": blob.size,
-                    "updated": blob.updated.isoformat() if blob.updated else None,
-                    "content_type": blob.content_type,
-                    "metadata": blob.metadata
-                }
-                
-                if blob.metadata and "original_filename" in blob.metadata:
-                    file_info["original_filename"] = blob.metadata["original_filename"]
+        try:
+            # List all blobs - limited to a reasonable number
+            all_blobs = list(bucket.list_blobs(max_results=100))
+            logger.info(f"Found {len(all_blobs)} total files in storage")
+            
+            # Create detailed file list
+            file_list = []
+            for blob in all_blobs:
+                # Skip text content files for cleaner output
+                if not blob.name.endswith('_text.txt'):
+                    file_info = {
+                        "name": blob.name,
+                        "size": blob.size,
+                        "updated": blob.updated.isoformat() if blob.updated else None,
+                        "content_type": blob.content_type,
+                        "metadata": blob.metadata
+                    }
                     
-                file_list.append(file_info)
-        
-        return jsonify({
-            "status": "success",
-            "data": {
-                "bucket": bucket.name,
-                "file_count": len(file_list),
-                "files": file_list
-            }
-        }), 200
+                    if blob.metadata and "original_filename" in blob.metadata:
+                        file_info["original_filename"] = blob.metadata["original_filename"]
+                        
+                    file_list.append(file_info)
+            
+            return jsonify({
+                "status": "success",
+                "data": {
+                    "bucket": bucket.name,
+                    "file_count": len(file_list),
+                    "files": file_list
+                }
+            }), 200
+        except Exception as blob_e:
+            logger.error(f"Error listing blobs: {blob_e}")
+            # Try the most direct approach possible
+            from firebase_admin import storage as admin_storage
+            
+            # Get bucket directly from Firebase admin
+            direct_bucket = admin_storage.bucket(app=firebase_admin.get_app())
+            logger.info(f"Direct bucket name: {direct_bucket.name}")
+            
+            # Try to list files directly
+            direct_blobs = list(direct_bucket.list_blobs(max_results=10))
+            logger.info(f"Direct listing found {len(direct_blobs)} files")
+            
+            direct_files = [{
+                "name": blob.name,
+                "size": blob.size
+            } for blob in direct_blobs]
+            
+            return jsonify({
+                "status": "partial_success",
+                "message": f"Used direct Firebase admin access due to error: {str(blob_e)}",
+                "data": {
+                    "bucket": direct_bucket.name,
+                    "file_count": len(direct_files),
+                    "files": direct_files
+                }
+            }), 200
         
     except Exception as e:
         logger.error(f"Error listing all files: {e}")
         return jsonify({
             "status": "error",
             "error": f"Could not list files: {str(e)}"
+        }), 500
+        
+@app.route('/direct_storage_test', methods=['GET'])
+def direct_storage_test():
+    """Most direct test of Firebase Storage possible"""
+    try:
+        logger.info("Running direct Firebase Storage test")
+        
+        # Import fresh to avoid any existing configuration issues
+        import firebase_admin
+        from firebase_admin import credentials as admin_cred
+        from firebase_admin import storage as admin_storage
+        
+        # Results container
+        results = {
+            "steps": [],
+            "files_found": []
+        }
+        
+        # Step 1: Check the service account file
+        sa_path = os.path.abspath('jamesmemorysync-firebase-adminsdk-fbsvc-d142d44489.json')
+        results["steps"].append({
+            "step": "Check service account file",
+            "success": os.path.exists(sa_path),
+            "path": sa_path
+        })
+        
+        if not os.path.exists(sa_path):
+            results["error"] = "Service account file not found"
+            return jsonify(results), 500
+            
+        # Step 2: Load the service account
+        try:
+            with open(sa_path, 'r') as f:
+                sa_content = json.load(f)
+                results["steps"].append({
+                    "step": "Read service account file",
+                    "success": True,
+                    "project_id": sa_content.get("project_id")
+                })
+        except Exception as e:
+            results["steps"].append({
+                "step": "Read service account file",
+                "success": False,
+                "error": str(e)
+            })
+            results["error"] = f"Could not read service account file: {str(e)}"
+            return jsonify(results), 500
+        
+        # Step 3: Initialize a fresh Firebase app
+        try:
+            # Try to delete any existing app first
+            for app in firebase_admin._apps.values():
+                firebase_admin.delete_app(app)
+                
+            # Create fresh credential
+            cred = admin_cred.Certificate(sa_path)
+            
+            # Get bucket name from environment
+            bucket_name = os.environ.get('FIREBASE_STORAGE_BUCKET', 'jamesmemorysync.appspot.com')
+            
+            # Initialize with just storage bucket
+            test_app = firebase_admin.initialize_app(cred, {
+                'storageBucket': bucket_name
+            }, name='storage_test')
+            
+            results["steps"].append({
+                "step": "Initialize Firebase app",
+                "success": True,
+                "app_name": test_app.name,
+                "project_id": test_app.project_id
+            })
+        except Exception as e:
+            results["steps"].append({
+                "step": "Initialize Firebase app",
+                "success": False,
+                "error": str(e)
+            })
+            results["error"] = f"Could not initialize Firebase: {str(e)}"
+            return jsonify(results), 500
+        
+        # Step 4: Get bucket reference
+        try:
+            bucket = admin_storage.bucket(app=test_app)
+            results["steps"].append({
+                "step": "Get bucket reference",
+                "success": True,
+                "bucket_name": bucket.name
+            })
+        except Exception as e:
+            results["steps"].append({
+                "step": "Get bucket reference",
+                "success": False,
+                "error": str(e)
+            })
+            results["error"] = f"Could not get bucket reference: {str(e)}"
+            return jsonify(results), 500
+        
+        # Step 5: List files
+        try:
+            blobs = list(bucket.list_blobs(max_results=50))
+            file_count = len(blobs)
+            
+            results["steps"].append({
+                "step": "List files",
+                "success": True,
+                "file_count": file_count
+            })
+            
+            # Add file details
+            for blob in blobs:
+                results["files_found"].append({
+                    "name": blob.name,
+                    "size": blob.size,
+                    "updated": blob.updated.isoformat() if blob.updated else None,
+                    "generation": blob.generation
+                })
+        except Exception as e:
+            results["steps"].append({
+                "step": "List files",
+                "success": False,
+                "error": str(e)
+            })
+            results["error"] = f"Could not list files: {str(e)}"
+            return jsonify(results), 500
+        
+        # Clean up
+        try:
+            firebase_admin.delete_app(test_app)
+        except:
+            pass
+        
+        return jsonify({
+            "status": "success",
+            "results": results
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error in direct storage test: {e}")
+        return jsonify({
+            "status": "error",
+            "error": str(e)
         }), 500
 
 @app.route('/system_stats', methods=['GET'])
