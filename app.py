@@ -389,6 +389,29 @@ def store_file():
                 file_id = str(uuid.uuid4())
                 
                 try:
+                    # Check if this is an OpenAI files URL 
+                    if "files.oaiusercontent.com" in file_url:
+                        logger.info(f"Detected OpenAI file URL - these require special handling")
+                        
+                        # For OpenAI files, we need special handling as they can't be directly downloaded
+                        # Extract filename from URL parameter if available
+                        import urllib.parse
+                        parsed_url = urllib.parse.urlparse(file_url)
+                        query_params = urllib.parse.parse_qs(parsed_url.query)
+                        
+                        # Try to get filename from rscd parameter which contains attachment; filename="..."
+                        filename_param = query_params.get('rscd', [''])[0]
+                        if 'filename=' in filename_param:
+                            import re
+                            filename_match = re.search(r'filename=[\"\']?([^\"\']+)[\"\']?', filename_param)
+                            if filename_match:
+                                original_filename = filename_match.group(1)
+                                
+                        logger.info(f"Creating reference entry for OpenAI file: {original_filename}")
+                        
+                        # For OpenAI files, we skip download attempt and go straight to reference storage
+                        raise Exception("OpenAI file URLs require authentication and cannot be directly downloaded")
+                    
                     # Try to download the actual file from the URL
                     logger.info(f"Attempting to download file from URL: {file_url}")
                     
@@ -399,8 +422,11 @@ def store_file():
                     with tempfile.NamedTemporaryFile(delete=False) as temp_file:
                         temp_path = temp_file.name
                     
-                    # Download the file
-                    response = requests.get(file_url, stream=True, timeout=30)
+                    # Download the file with extended timeout and user agent
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    }
+                    response = requests.get(file_url, stream=True, timeout=45, headers=headers)
                     response.raise_for_status()  # Raise exception for 4XX/5XX responses
                     
                     # Get content type and suggested filename
@@ -512,10 +538,17 @@ def store_file():
                     # Fall back to storing just the reference if download fails
                     logger.info(f"Falling back to URL reference storage")
                     
+                    # Check if this was an OpenAI file
+                    is_openai_file = "files.oaiusercontent.com" in file_url
+                    
+                    # Determine file type from filename
+                    file_ext = os.path.splitext(original_filename)[1].lower()
+                    mime_type = mimetypes.guess_type(original_filename)[0] or "application/octet-stream"
+                    
                     # Create metadata for the URL reference
                     file_metadata = {
                         "original_filename": original_filename,
-                        "content_type": "url/reference",
+                        "content_type": mime_type,
                         "category": category,
                         "file_id": file_id,
                         "created_at": datetime.now().isoformat(),
@@ -524,27 +557,49 @@ def store_file():
                         "tags": tags,
                         "description": description,
                         "download_failed": True,
-                        "download_error": str(download_e)
+                        "download_error": str(download_e),
+                        "is_openai_file": is_openai_file
                     }
                     
                     # Store a reference file with the URL
                     bucket = get_bucket()
-                    storage_path = f"{category}/{file_id}.url.txt"
+                    storage_path = f"{category}/{file_id}{file_ext or '.txt'}"
                     blob = bucket.blob(storage_path)
                     
-                    # Set metadata and upload URL as content
+                    # Create meaningful content for the reference
+                    reference_content = f"""Reference to: {original_filename}
+Type: {mime_type}
+URL: {file_url}
+Description: {description}
+Tags: {', '.join(tags) if isinstance(tags, list) else tags}
+Created: {datetime.now().isoformat()}
+
+Note: This is a reference entry. The original file could not be downloaded.
+{f"This is an OpenAI file that requires authentication to access." if is_openai_file else ""}
+"""
+                    
+                    # Set metadata and upload reference content
                     blob.metadata = file_metadata
-                    blob.upload_from_string(f"URL Reference: {file_url}\nDescription: {description}")
+                    blob.upload_from_string(reference_content)
+                    
+                    # For searchability, create a text content file
+                    text_blob = bucket.blob(f"{category}/{file_id}_text.txt")
+                    text_content = f"{original_filename}\n{description}\n{', '.join(tags) if isinstance(tags, list) else tags}"
+                    text_blob.upload_from_string(text_content)
+                    
+                    message = "OpenAI file reference stored successfully" if is_openai_file else "File reference stored successfully (download failed)"
                     
                     return jsonify({
                         "status": "success",
                         "data": {
-                            "message": "File reference stored successfully (download failed)",
+                            "message": message,
                             "file_id": file_id,
                             "category": category,
                             "storage_path": storage_path,
                             "external_url": file_url,
-                            "metadata": file_metadata
+                            "metadata": file_metadata,
+                            "content_type": mime_type,
+                            "original_filename": original_filename
                         }
                     }), 200
         
