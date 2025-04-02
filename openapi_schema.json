@@ -10,6 +10,9 @@
       "url": "https://ai-memory-system-storage.onrender.com"
     }
   ],
+  "auth": {
+    "type": "none"
+  },
   "paths": {
     "/edit_document/{file_id}": {
       "post": {
