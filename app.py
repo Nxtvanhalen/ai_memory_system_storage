@@ -388,39 +388,165 @@ def store_file():
                 # Generate a unique ID for the file reference
                 file_id = str(uuid.uuid4())
                 
-                # Create metadata for the URL reference
-                file_metadata = {
-                    "original_filename": original_filename,
-                    "content_type": "url/reference",
-                    "category": category,
-                    "file_id": file_id,
-                    "created_at": datetime.now().isoformat(),
-                    "external_url": file_url,
-                    "is_reference": True,
-                    "tags": tags,
-                    "description": description
-                }
-                
-                # Store a reference file with the URL
-                bucket = get_bucket()
-                storage_path = f"{category}/{file_id}.url.txt"
-                blob = bucket.blob(storage_path)
-                
-                # Set metadata and upload URL as content
-                blob.metadata = file_metadata
-                blob.upload_from_string(f"URL Reference: {file_url}\nDescription: {description}")
-                
-                return jsonify({
-                    "status": "success",
-                    "data": {
-                        "message": "File reference stored successfully",
-                        "file_id": file_id,
+                try:
+                    # Try to download the actual file from the URL
+                    logger.info(f"Attempting to download file from URL: {file_url}")
+                    
+                    import requests
+                    from urllib.parse import urlparse
+                    
+                    # Create a temporary file to store the download
+                    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                        temp_path = temp_file.name
+                    
+                    # Download the file
+                    response = requests.get(file_url, stream=True, timeout=30)
+                    response.raise_for_status()  # Raise exception for 4XX/5XX responses
+                    
+                    # Get content type and suggested filename
+                    content_type = response.headers.get('Content-Type', 'application/octet-stream')
+                    
+                    # Try to get filename from Content-Disposition header
+                    if 'Content-Disposition' in response.headers:
+                        import re
+                        cd = response.headers['Content-Disposition']
+                        filename_match = re.findall('filename="?([^"]+)"?', cd)
+                        if filename_match:
+                            original_filename = filename_match[0]
+                    
+                    # Determine file extension if needed
+                    if '.' not in original_filename:
+                        ext = mimetypes.guess_extension(content_type)
+                        if ext:
+                            original_filename += ext
+                    
+                    # Write the downloaded content to the temp file
+                    with open(temp_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    
+                    # Detect actual MIME type
+                    mime_type = magic.from_file(temp_path, mime=True)
+                    
+                    # Extract text content if possible
+                    text_content = extract_text_from_file(temp_path, mime_type)
+                    
+                    # Extract image metadata if applicable
+                    additional_metadata = {}
+                    if mime_type.startswith('image/'):
+                        additional_metadata = extract_image_metadata(temp_path)
+                    
+                    # Create metadata for the actual file
+                    file_metadata = {
+                        "original_filename": original_filename,
+                        "content_type": mime_type,
                         "category": category,
-                        "storage_path": storage_path,
-                        "external_url": file_url,
-                        "metadata": file_metadata
+                        "file_id": file_id,
+                        "created_at": datetime.now().isoformat(),
+                        "source_url": file_url,
+                        "tags": tags,
+                        "has_text_content": bool(text_content),
+                        "file_size": os.path.getsize(temp_path),
+                        "description": description
                     }
-                }), 200
+                    
+                    # Add any additional metadata
+                    file_metadata.update(additional_metadata)
+                    
+                    # Convert any non-string values to strings for Firebase
+                    for key, value in file_metadata.items():
+                        if not isinstance(value, (str, bool, int, float)):
+                            file_metadata[key] = json.dumps(value)
+                    
+                    # Determine file extension for storage
+                    file_ext = os.path.splitext(original_filename)[1].lower()
+                    if not file_ext:
+                        file_ext = mimetypes.guess_extension(mime_type) or '.bin'
+                    
+                    # Store the actual file
+                    bucket = get_bucket()
+                    storage_path = f"{category}/{file_id}{file_ext}"
+                    blob = bucket.blob(storage_path)
+                    
+                    # Set metadata and upload file
+                    blob.metadata = file_metadata
+                    blob.upload_from_filename(temp_path)
+                    
+                    # If we have extracted text content, store it as a separate metadata file
+                    if text_content:
+                        text_blob = bucket.blob(f"{category}/{file_id}_text.txt")
+                        text_blob.upload_from_string(text_content)
+                    
+                    # Generate a download URL
+                    try:
+                        download_url = blob.generate_signed_url(
+                            version="v4",
+                            expiration=timedelta(hours=24),
+                            method="GET"
+                        )
+                    except Exception as url_e:
+                        logger.warning(f"Could not generate signed URL: {url_e}")
+                        download_url = None
+                    
+                    # Clean up temp file
+                    try:
+                        os.unlink(temp_path)
+                    except:
+                        pass
+                    
+                    return jsonify({
+                        "status": "success",
+                        "data": {
+                            "message": "File downloaded and stored successfully",
+                            "file_id": file_id,
+                            "category": category,
+                            "storage_path": storage_path,
+                            "download_url": download_url,
+                            "metadata": file_metadata
+                        }
+                    }), 200
+                    
+                except Exception as download_e:
+                    logger.error(f"Error downloading file from URL: {download_e}")
+                    
+                    # Fall back to storing just the reference if download fails
+                    logger.info(f"Falling back to URL reference storage")
+                    
+                    # Create metadata for the URL reference
+                    file_metadata = {
+                        "original_filename": original_filename,
+                        "content_type": "url/reference",
+                        "category": category,
+                        "file_id": file_id,
+                        "created_at": datetime.now().isoformat(),
+                        "external_url": file_url,
+                        "is_reference": True,
+                        "tags": tags,
+                        "description": description,
+                        "download_failed": True,
+                        "download_error": str(download_e)
+                    }
+                    
+                    # Store a reference file with the URL
+                    bucket = get_bucket()
+                    storage_path = f"{category}/{file_id}.url.txt"
+                    blob = bucket.blob(storage_path)
+                    
+                    # Set metadata and upload URL as content
+                    blob.metadata = file_metadata
+                    blob.upload_from_string(f"URL Reference: {file_url}\nDescription: {description}")
+                    
+                    return jsonify({
+                        "status": "success",
+                        "data": {
+                            "message": "File reference stored successfully (download failed)",
+                            "file_id": file_id,
+                            "category": category,
+                            "storage_path": storage_path,
+                            "external_url": file_url,
+                            "metadata": file_metadata
+                        }
+                    }), 200
         
         # Standard file upload handling
         if not request.files or 'file' not in request.files and not hasattr(request, 'custom_gpt_files'):
