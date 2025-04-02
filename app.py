@@ -371,7 +371,58 @@ app.before_request(lambda: unwrap_params(lambda: None)())
 def store_file():
     """Store a file in Firebase Storage with metadata"""
     try:
-        # Handle file upload
+        # Alternative method for Custom GPT to send file URL
+        if request.is_json:
+            json_data = request.get_json()
+            file_url = json_data.get('file_url')
+            
+            if file_url:
+                logger.info(f"Received file URL: {file_url}")
+                
+                # For direct URLs, allow storing metadata and reference
+                category = json_data.get('category', 'default')
+                original_filename = json_data.get('filename', f"file_{datetime.now().strftime('%Y%m%d%H%M%S')}")
+                description = json_data.get('description', '')
+                tags = json_data.get('tags', [])
+                
+                # Generate a unique ID for the file reference
+                file_id = str(uuid.uuid4())
+                
+                # Create metadata for the URL reference
+                file_metadata = {
+                    "original_filename": original_filename,
+                    "content_type": "url/reference",
+                    "category": category,
+                    "file_id": file_id,
+                    "created_at": datetime.now().isoformat(),
+                    "external_url": file_url,
+                    "is_reference": True,
+                    "tags": tags,
+                    "description": description
+                }
+                
+                # Store a reference file with the URL
+                bucket = get_bucket()
+                storage_path = f"{category}/{file_id}.url.txt"
+                blob = bucket.blob(storage_path)
+                
+                # Set metadata and upload URL as content
+                blob.metadata = file_metadata
+                blob.upload_from_string(f"URL Reference: {file_url}\nDescription: {description}")
+                
+                return jsonify({
+                    "status": "success",
+                    "data": {
+                        "message": "File reference stored successfully",
+                        "file_id": file_id,
+                        "category": category,
+                        "storage_path": storage_path,
+                        "external_url": file_url,
+                        "metadata": file_metadata
+                    }
+                }), 200
+        
+        # Standard file upload handling
         if not request.files or 'file' not in request.files and not hasattr(request, 'custom_gpt_files'):
             return jsonify({"status": "error", "error": "No file provided"}), 400
             
@@ -655,6 +706,13 @@ def search_files():
             if category and query.lower() in category.lower():
                 match_score += 5
                 match_reason.append("category")
+                
+            # Match by URL for URL references
+            if metadata.get('is_reference', False) and metadata.get('external_url'):
+                external_url = metadata.get('external_url', '')
+                if query.lower() in external_url.lower():
+                    match_score += 12
+                    match_reason.append("url")
                 
             # If we're including text content and there's a text blob
             if include_text and f"{blob.name.rsplit('.', 1)[0]}_text.txt" in [b.name for b in all_blobs]:
