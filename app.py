@@ -1490,6 +1490,29 @@ def health_check():
         }
     }), 200
 
+@app.route('/env_check', methods=['GET'])
+def env_check():
+    """Debug endpoint to check environment variables"""
+    # Create a safe subset of env vars to display
+    safe_env = {
+        "FIREBASE_STORAGE_BUCKET": os.environ.get('FIREBASE_STORAGE_BUCKET', 'Not set'),
+        "PROJECT_ID": os.environ.get('PROJECT_ID', 'Not set'),
+        "PORT": os.environ.get('PORT', 'Not set'),
+        "PYTHONPATH": os.environ.get('PYTHONPATH', 'Not set'),
+        "FIREBASE_SERVICE_ACCOUNT": "Present" if os.environ.get('FIREBASE_SERVICE_ACCOUNT') else "Not set",
+        "SERVICE_ACCOUNT_FILE_EXISTS": os.path.exists(os.path.abspath('jamesmemorysync-firebase-adminsdk-fbsvc-d142d44489.json')),
+        "WORKING_DIRECTORY": os.getcwd(),
+        "DIRECTORY_CONTENTS": os.listdir('.')
+    }
+    
+    return jsonify({
+        "status": "success",
+        "data": {
+            "environment": safe_env,
+            "timestamp": datetime.now().isoformat()
+        }
+    }), 200
+
 @app.route('/list_all_files', methods=['GET'])
 @api_error_handler
 def list_all_files():
